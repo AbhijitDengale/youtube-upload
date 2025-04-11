@@ -404,15 +404,25 @@ def test_upload_to_channels(drive_client, youtube_uploader, sheets_logger, teleg
     # Get all folders from Google Drive
     all_folders = drive_client.get_folders()
     
-    # Find the GeminiStories folder
+    # Log all folders found to help with debugging
+    if all_folders:
+        logger.info(f"Found {len(all_folders)} folders in Google Drive")
+        folder_names = [f"{folder.get('name')} (ID: {folder.get('id')})" for folder in all_folders]
+        logger.info(f"Available folders: {', '.join(folder_names)}")
+    else:
+        logger.warning("No folders found in Google Drive")
+    
+    # Find the GeminiStories folder (case-insensitive)
     target_folder = None
     for folder in all_folders:
-        if folder.get('name') == target_folder_name:
+        folder_name = folder.get('name', '')
+        # Use case-insensitive comparison
+        if folder_name.lower() == target_folder_name.lower():
             target_folder = folder
             break
     
     if not target_folder:
-        error_msg = f"Folder '{target_folder_name}' not found in Google Drive for testing"
+        error_msg = f"Folder with name like '{target_folder_name}' not found in Google Drive for testing"
         logger.error(error_msg)
         telegram.send_message(f"❌ Test failed: {error_msg}")
         return {}
@@ -420,10 +430,18 @@ def test_upload_to_channels(drive_client, youtube_uploader, sheets_logger, teleg
     # Process the target folder
     folder_name = target_folder.get('name')
     folder_id = target_folder.get('id')
-    logger.info(f"Found {folder_name} folder for testing")
+    logger.info(f"Found {folder_name} folder for testing (ID: {folder_id})")
     
     # Get subfolders within the target folder
     subfolders = drive_client.get_subfolders(folder_id)
+    
+    # Log the subfolders
+    if subfolders:
+        logger.info(f"Found {len(subfolders)} subfolders in {folder_name}")
+        subfolder_names = [subfolder.get('name') for subfolder in subfolders]
+        logger.info(f"Subfolders: {', '.join(subfolder_names)}")
+    else:
+        logger.warning(f"No subfolders found in {folder_name}")
     
     # Look for videos in each subfolder
     for subfolder in subfolders:
@@ -438,6 +456,7 @@ def test_upload_to_channels(drive_client, youtube_uploader, sheets_logger, teleg
         videos = drive_client.get_videos(subfolder_id)
         
         if videos:
+            logger.info(f"Found {len(videos)} video(s) in {subfolder_name}")
             # Use the first video found for testing
             video = videos[0]
             test_video = {
@@ -448,10 +467,12 @@ def test_upload_to_channels(drive_client, youtube_uploader, sheets_logger, teleg
                 "subfolder_id": subfolder_id
             }
             logger.info(f"Found test video: {video.get('name')} in {subfolder_name}")
+        else:
+            logger.info(f"No videos found in subfolder {subfolder_name}")
     
     if not test_video:
-        logger.error(f"No videos found in any {target_folder_name} subfolders. Please upload a video first.")
-        telegram.send_message(f"❌ Test failed: No videos found in {target_folder_name} folder. Please upload a video first.")
+        logger.error(f"No videos found in any {folder_name} subfolders. Please upload a video first.")
+        telegram.send_message(f"❌ Test failed: No videos found in {folder_name} folder. Please upload a video first.")
         return {}
     
     # Test upload to each channel
@@ -612,15 +633,25 @@ def main():
         # Get all folders from Google Drive
         all_folders = drive_client.get_folders()
         
-        # Find the GeminiStories folder (or the folder specified by --folder)
+        # Log all folders found to help with debugging
+        if all_folders:
+            logger.info(f"Found {len(all_folders)} folders in Google Drive")
+            folder_names = [f"{folder.get('name')} (ID: {folder.get('id')})" for folder in all_folders]
+            logger.info(f"Available folders: {', '.join(folder_names)}")
+        else:
+            logger.warning("No folders found in Google Drive")
+        
+        # Find the GeminiStories folder (or the folder specified by --folder) using case-insensitive matching
         target_folder = None
         for folder in all_folders:
-            if folder.get('name') == target_folder_name:
+            folder_name = folder.get('name', '')
+            # Use case-insensitive comparison
+            if folder_name.lower() == target_folder_name.lower():
                 target_folder = folder
                 break
         
         if not target_folder:
-            error_msg = f"Folder '{target_folder_name}' not found in Google Drive. Please create it or specify the correct folder name."
+            error_msg = f"Folder with name like '{target_folder_name}' not found in Google Drive. Please create it or specify the correct folder name."
             logger.error(error_msg)
             telegram.send_message(f"❌ {error_msg}")
             return
@@ -628,10 +659,20 @@ def main():
         # Process the target folder and its subfolders
         folder_name = target_folder.get('name')
         folder_id = target_folder.get('id')
-        logger.info(f"Processing main folder: {folder_name}")
+        logger.info(f"Processing main folder: {folder_name} (ID: {folder_id})")
         
         # Get subfolders within the target folder
         subfolders = drive_client.get_subfolders(folder_id)
+        
+        # Log the subfolders
+        if subfolders:
+            logger.info(f"Found {len(subfolders)} subfolders in {folder_name}")
+            subfolder_names = [subfolder.get('name') for subfolder in subfolders]
+            logger.info(f"Subfolders: {', '.join(subfolder_names)}")
+        else:
+            logger.warning(f"No subfolders found in {folder_name}")
+            telegram.send_message(f"⚠️ Warning: No subfolders found in {folder_name} folder")
+            return
         
         # Count of processed videos
         processed_count = 0
@@ -648,6 +689,8 @@ def main():
                 if not videos:
                     logger.info(f"No videos found in subfolder {subfolder_name}")
                     continue
+                
+                logger.info(f"Found {len(videos)} video(s) in {subfolder_name}")
                     
                 for video in videos:
                     video_id = video.get('id')
@@ -664,12 +707,16 @@ def main():
                     
                     # Check if video has already been uploaded to all channels
                     uploaded_channels = sheets_logger.get_uploaded_channels(video_id)
-                    if uploaded_channels and len(uploaded_channels) >= len(youtube_uploader.channels):
+                    if uploaded_channels and len(uploaded_channels) >= len(youtube_uploader.channels) - 1:  # -1 for default client
                         logger.info(f"Video {video_name} already uploaded to all channels. Skipping.")
                         continue
                     
                     # Upload to each channel that hasn't received this video yet
                     for channel_name, youtube_client in youtube_uploader.channels.items():
+                        # Skip the default client which is used internally
+                        if channel_name == "default":
+                            continue
+                            
                         channel_display_name = channel_name
                         for channel in YOUTUBE_CHANNELS:
                             if channel["credentials_file"].startswith(channel_name) or channel["handle"] == channel_name:
