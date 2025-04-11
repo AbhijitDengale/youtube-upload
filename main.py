@@ -204,19 +204,39 @@ def create_channel_placeholder_files():
         cred_file = channel["credentials_file"]
         if not os.path.exists(cred_file):
             logger.info(f"Creating placeholder file for {channel['name']} channel")
+            # Create a valid JSON structure for the placeholder
+            placeholder_data = {
+                "installed": {
+                    "client_id": f"placeholder-{channel['handle']}",
+                    "project_id": "youtube-upload-automation",
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                    "client_secret": "placeholder-secret",
+                    "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob", "http://localhost"]
+                }
+            }
+            
+            # Write the JSON data to the file
             with open(cred_file, "w") as f:
+                json.dump(placeholder_data, f, indent=2)
+                
+            # Also create a .info file to document what this is for humans
+            with open(f"{cred_file}.info", "w") as f:
                 f.write(f"""
-# Placeholder for YouTube OAuth credentials
+# Information about the YouTube OAuth credentials file
 # Channel: {channel['name']} (@{channel['handle']})
 #
-# To upload videos to this channel, replace this file with proper OAuth credentials
+# The main file ({cred_file}) contains a placeholder for OAuth credentials.
+# To upload videos to this channel, replace it with proper OAuth credentials
 # from the Google Cloud Console.
 #
+# Steps to create proper credentials:
 # 1. Go to https://console.cloud.google.com/
 # 2. Create a new project or select an existing one
 # 3. Enable the YouTube Data API v3
 # 4. Create OAuth2 credentials (Application type: Desktop app)
-# 5. Download the credentials as {cred_file} and replace this file
+# 5. Download the credentials and replace {cred_file} with the downloaded content
 """)
 
 def upload_video_to_channel(drive_client, youtube_client, sheets_logger, telegram, video_info, channel_name="default"):
