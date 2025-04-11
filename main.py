@@ -397,82 +397,247 @@ def test_upload_to_channels(drive_client, youtube_uploader, sheets_logger, teleg
     test_video = None
     test_results = {}
     
-    # Specifically look for the GeminiStories folder
+    # Set the target folder name (hardcoded to "GeminiStories")
     target_folder_name = "GeminiStories"
     logger.info(f"Scanning for {target_folder_name} folder for test videos")
     
-    # Get all folders from Google Drive
-    all_folders = drive_client.get_folders()
+    # DIRECT VIDEO SEARCH APPROACH - Use same approach as main function
+    logger.info("Using direct video search approach to find target folder for testing")
     
-    # Log all folders found to help with debugging
-    if all_folders:
-        logger.info(f"Found {len(all_folders)} folders in Google Drive")
-        folder_names = [f"{folder.get('name')} (ID: {folder.get('id')})" for folder in all_folders]
-        logger.info(f"Available folders: {', '.join(folder_names)}")
-    else:
-        logger.warning("No folders found in Google Drive")
-    
-    # Find the GeminiStories folder (case-insensitive)
-    target_folder = None
-    for folder in all_folders:
-        folder_name = folder.get('name', '')
-        # Use case-insensitive comparison
-        if folder_name.lower() == target_folder_name.lower():
-            target_folder = folder
-            break
-    
-    if not target_folder:
-        error_msg = f"Folder with name like '{target_folder_name}' not found in Google Drive for testing"
-        logger.error(error_msg)
-        telegram.send_message(f"❌ Test failed: {error_msg}")
-        return {}
-    
-    # Process the target folder
-    folder_name = target_folder.get('name')
-    folder_id = target_folder.get('id')
-    logger.info(f"Found {folder_name} folder for testing (ID: {folder_id})")
-    
-    # Get subfolders within the target folder
-    subfolders = drive_client.get_subfolders(folder_id)
-    
-    # Log the subfolders
-    if subfolders:
-        logger.info(f"Found {len(subfolders)} subfolders in {folder_name}")
-        subfolder_names = [subfolder.get('name') for subfolder in subfolders]
-        logger.info(f"Subfolders: {', '.join(subfolder_names)}")
-    else:
-        logger.warning(f"No subfolders found in {folder_name}")
-    
-    # Look for videos in each subfolder
-    for subfolder in subfolders:
-        if test_video:
-            break
+    try:
+        # Search for video files
+        logger.info("Searching for video files to identify the target folder...")
+        video_query = "mimeType contains 'video/' and trashed=false"
+        video_results = drive_client.drive_service.files().list(
+            q=video_query,
+            fields="files(id, name, parents)",
+            pageSize=10  # Limit to 10 videos for efficiency
+        ).execute()
+        
+        videos = video_results.get('files', [])
+        
+        if not videos:
+            logger.error("No videos found in Google Drive.")
+            telegram.send_message("❌ Test failed: No videos found in Google Drive.")
+            return {}
+        
+        logger.info(f"Found {len(videos)} videos, examining parent folders...")
+        
+        # Keep track of potential GeminiStories parent folders
+        potential_folders = {}
+        
+        # Check parent folders of videos
+        for video in videos:
+            video_name = video.get('name')
+            parent_ids = video.get('parents', [])
             
-        subfolder_name = subfolder.get('name')
-        subfolder_id = subfolder.get('id')
-        logger.info(f"Checking subfolder {subfolder_name} for test videos")
+            if not parent_ids:
+                continue
+            
+            parent_id = parent_ids[0]
+            
+            # Get the parent folder
+            try:
+                parent_folder = drive_client.drive_service.files().get(
+                    fileId=parent_id,
+                    fields="id, name, parents"
+                ).execute()
+                
+                parent_name = parent_folder.get('name')
+                grandparent_ids = parent_folder.get('parents', [])
+                
+                if not grandparent_ids:
+                    continue
+                
+                grandparent_id = grandparent_ids[0]
+                
+                # Get the grandparent folder
+                grandparent_folder = drive_client.drive_service.files().get(
+                    fileId=grandparent_id,
+                    fields="id, name"
+                ).execute()
+                
+                grandparent_name = grandparent_folder.get('name')
+                
+                # Check if this could be our target folder
+                if grandparent_name.lower() == target_folder_name.lower():
+                    if grandparent_id not in potential_folders:
+                        potential_folders[grandparent_id] = {
+                            'name': grandparent_name,
+                            'video_count': 1,
+                            'children': set([parent_id])
+                        }
+                    else:
+                        potential_folders[grandparent_id]['video_count'] += 1
+                        potential_folders[grandparent_id]['children'].add(parent_id)
+                
+                logger.info(f"Video '{video_name}' is in '{parent_name}' which is in '{grandparent_name}'")
+                
+            except Exception as e:
+                logger.warning(f"Error getting parent info for video {video_name}: {str(e)}")
         
-        # Get videos in this subfolder
-        videos = drive_client.get_videos(subfolder_id)
-        
-        if videos:
-            logger.info(f"Found {len(videos)} video(s) in {subfolder_name}")
-            # Use the first video found for testing
-            video = videos[0]
-            test_video = {
-                "id": video.get('id'),
-                "name": video.get('name'),
-                "folder_name": folder_name,
-                "subfolder_name": subfolder_name,
-                "subfolder_id": subfolder_id
-            }
-            logger.info(f"Found test video: {video.get('name')} in {subfolder_name}")
+        # Process target folder
+        if potential_folders:
+            # Choose the folder with the most videos
+            best_folder_id = max(potential_folders.items(), key=lambda x: x[1]['video_count'])[0]
+            best_folder_name = potential_folders[best_folder_id]['name']
+            
+            logger.info(f"Found target folder through video search: {best_folder_name} (ID: {best_folder_id})")
+            
+            # Use one of the first videos for testing
+            for first_video in videos:
+                parent_ids = first_video.get('parents', [])
+                if not parent_ids:
+                    continue
+                
+                parent_id = parent_ids[0]
+                
+                # Get parent info
+                parent_folder = drive_client.drive_service.files().get(
+                    fileId=parent_id,
+                    fields="id, name, parents"
+                ).execute()
+                
+                parent_name = parent_folder.get('name')
+                grandparent_ids = parent_folder.get('parents', [])
+                
+                if not grandparent_ids:
+                    continue
+                
+                if grandparent_ids[0] == best_folder_id:
+                    # Found a video in our target folder structure
+                    test_video = {
+                        "id": first_video.get('id'),
+                        "name": first_video.get('name'),
+                        "folder_name": best_folder_name,
+                        "subfolder_name": parent_name,
+                        "subfolder_id": parent_id
+                    }
+                    logger.info(f"Using video {first_video.get('name')} for testing")
+                    break
         else:
-            logger.info(f"No videos found in subfolder {subfolder_name}")
+            # Fallback to the old search method
+            logger.info("Direct video search didn't find the target folder, falling back to folder search method")
+            
+            # Get all folders from Google Drive
+            all_folders = drive_client.get_folders()
+            
+            # Log all folders found to help with debugging
+            if all_folders:
+                logger.info(f"Found {len(all_folders)} folders in Google Drive")
+                folder_names = [f"{folder.get('name')} (ID: {folder.get('id')})" for folder in all_folders]
+                logger.info(f"Available folders: {', '.join(folder_names)}")
+            else:
+                logger.warning("No folders found in Google Drive")
+            
+            # Find the target folder using case-insensitive matching
+            target_folder = None
+            for folder in all_folders:
+                folder_name = folder.get('name', '')
+                # Use case-insensitive comparison
+                if folder_name.lower() == target_folder_name.lower():
+                    target_folder = folder
+                    break
+            
+            if not target_folder:
+                error_msg = f"Folder with name like '{target_folder_name}' not found in Google Drive for testing"
+                logger.error(error_msg)
+                telegram.send_message(f"❌ Test failed: {error_msg}")
+                return {}
+            
+            # Process the target folder
+            folder_name = target_folder.get('name')
+            folder_id = target_folder.get('id')
+            logger.info(f"Found {folder_name} folder for testing (ID: {folder_id})")
+            
+            # Get subfolders within the target folder
+            subfolders = drive_client.get_subfolders(folder_id)
+            
+            # Log the subfolders
+            if subfolders:
+                logger.info(f"Found {len(subfolders)} subfolders in {folder_name}")
+                subfolder_names = [subfolder.get('name') for subfolder in subfolders]
+                logger.info(f"Subfolders: {', '.join(subfolder_names)}")
+            else:
+                logger.warning(f"No subfolders found in {folder_name}")
+            
+            # Look for videos in each subfolder
+            for subfolder in subfolders:
+                if test_video:
+                    break
+                    
+                subfolder_name = subfolder.get('name')
+                subfolder_id = subfolder.get('id')
+                logger.info(f"Checking subfolder {subfolder_name} for test videos")
+                
+                # Get videos in this subfolder
+                videos = drive_client.get_videos(subfolder_id)
+                
+                if videos:
+                    logger.info(f"Found {len(videos)} video(s) in {subfolder_name}")
+                    # Use the first video found for testing
+                    video = videos[0]
+                    test_video = {
+                        "id": video.get('id'),
+                        "name": video.get('name'),
+                        "folder_name": folder_name,
+                        "subfolder_name": subfolder_name,
+                        "subfolder_id": subfolder_id
+                    }
+                    logger.info(f"Found test video: {video.get('name')} in {subfolder_name}")
+                else:
+                    logger.info(f"No videos found in subfolder {subfolder_name}")
+                    
+    except Exception as e:
+        logger.error(f"Error in test video search: {str(e)}")
+        # Fallback to a direct search for videos
+        try:
+            # Just try to get any video for testing
+            video_query = "mimeType contains 'video/' and trashed=false"
+            video_results = drive_client.drive_service.files().list(
+                q=video_query,
+                fields="files(id, name, parents)",
+                pageSize=1
+            ).execute()
+            
+            videos = video_results.get('files', [])
+            if videos:
+                video = videos[0]
+                parent_id = video.get('parents', ['unknown'])[0]
+                
+                # Get parent folder
+                parent_info = drive_client.drive_service.files().get(
+                    fileId=parent_id,
+                    fields="id, name, parents"
+                ).execute()
+                
+                parent_name = parent_info.get('name', 'Unknown')
+                grandparent_id = parent_info.get('parents', ['unknown'])[0]
+                
+                # Get grandparent folder
+                grandparent_info = drive_client.drive_service.files().get(
+                    fileId=grandparent_id,
+                    fields="id, name"
+                ).execute()
+                
+                grandparent_name = grandparent_info.get('name', 'Unknown')
+                
+                # Use this video as a fallback
+                test_video = {
+                    "id": video.get('id'),
+                    "name": video.get('name'),
+                    "folder_name": grandparent_name,
+                    "subfolder_name": parent_name,
+                    "subfolder_id": parent_id
+                }
+                logger.info(f"Using fallback video for testing: {video.get('name')} from {parent_name}")
+            
+        except Exception as fallback_error:
+            logger.error(f"Error in fallback video search: {str(fallback_error)}")
     
     if not test_video:
-        logger.error(f"No videos found in any {folder_name} subfolders. Please upload a video first.")
-        telegram.send_message(f"❌ Test failed: No videos found in {folder_name} folder. Please upload a video first.")
+        logger.error(f"No videos found in any {target_folder_name} subfolders. Please upload a video first.")
+        telegram.send_message(f"❌ Test failed: No videos found that can be used for testing. Please upload a video first.")
         return {}
     
     # Test upload to each channel
