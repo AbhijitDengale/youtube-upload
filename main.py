@@ -94,56 +94,59 @@ def download_api_keys_from_drive():
         
         if is_colab:
             try:
-                # Use Google Colab authentication - with better error handling
-                from google.colab import auth, drive
-                from googleapiclient.discovery import build
-                from googleapiclient.http import MediaIoBaseDownload
-                import google.auth
+                # Just download directly from the URLs rather than mounting Drive
+                logger.info("Downloading API credentials from direct URLs...")
                 
-                # For Google Colab, we'll mount Google Drive instead of direct authentication
-                # This is more reliable than the default auth method
-                logger.info("Mounting Google Drive in Colab...")
-                drive.mount('/content/drive')
-                
-                # Create a temp directory to store downloaded files
-                os.makedirs("/content/temp", exist_ok=True)
+                # Create directories if needed
+                os.makedirs("temp", exist_ok=True)
                 
                 # Extract file IDs from links
                 drive_api_key_id = DRIVE_API_KEY_LINK.split('/')[-2]
                 sheets_api_key_id = SHEETS_API_KEY_LINK.split('/')[-2]
                 
-                # Try to copy the files from shared Drive to local storage
-                logger.info("Copying API key files to local storage...")
-                try:
-                    subprocess.run(
-                        ["cp", "-f", "/content/drive/MyDrive/credentials.json", "/content/"],
-                        stderr=subprocess.DEVNULL, check=False
-                    )
-                except Exception:
-                    logger.info("credentials.json not found in main Drive")
+                # Direct download URLs
+                drive_download_url = f"https://drive.google.com/uc?export=download&id={drive_api_key_id}"
+                sheets_download_url = f"https://drive.google.com/uc?export=download&id={sheets_api_key_id}"
                 
+                # Download Drive API credentials
                 try:
-                    subprocess.run(
-                        ["cp", "-f", "/content/drive/MyDrive/google_sheets_credentials.json", "/content/"],
-                        stderr=subprocess.DEVNULL, check=False
-                    )
-                except Exception:
-                    logger.info("google_sheets_credentials.json not found in main Drive")
-                
-                # If files are not found in Drive, fallback to default credentials
-                if not os.path.exists('/content/credentials.json'):
-                    # Create a default credentials file for Drive API
-                    logger.info("Creating default credentials.json file...")
+                    logger.info(f"Downloading Google Drive API credentials from {drive_download_url}")
+                    response = requests.get(drive_download_url)
+                    if response.status_code == 200:
+                        with open('credentials.json', 'wb') as f:
+                            f.write(response.content)
+                        logger.info("Successfully downloaded Google Drive credentials")
+                    else:
+                        logger.error(f"Failed to download Drive API key: {response.status_code}")
+                        # Create a fallback file
+                        with open('credentials.json', 'w') as f:
+                            f.write('{"installed":{"client_id":"placeholder","project_id":"youtube-upload-automation"}}')
+                except Exception as e:
+                    logger.error(f"Error downloading Drive API key: {str(e)}")
+                    # Create a fallback file
                     with open('credentials.json', 'w') as f:
                         f.write('{"installed":{"client_id":"placeholder","project_id":"youtube-upload-automation"}}')
                 
-                if not os.path.exists('/content/google_sheets_credentials.json'):
-                    # Create a default credentials file for Sheets API
-                    logger.info("Creating default google_sheets_credentials.json file...")
+                # Download Sheets API credentials
+                try:
+                    logger.info(f"Downloading Google Sheets API credentials from {sheets_download_url}")
+                    response = requests.get(sheets_download_url)
+                    if response.status_code == 200:
+                        with open('google_sheets_credentials.json', 'wb') as f:
+                            f.write(response.content)
+                        logger.info("Successfully downloaded Google Sheets credentials")
+                    else:
+                        logger.error(f"Failed to download Sheets API key: {response.status_code}")
+                        # Create a fallback file
+                        with open('google_sheets_credentials.json', 'w') as f:
+                            f.write('{"installed":{"client_id":"placeholder","project_id":"youtube-upload-automation"}}')
+                except Exception as e:
+                    logger.error(f"Error downloading Sheets API key: {str(e)}")
+                    # Create a fallback file
                     with open('google_sheets_credentials.json', 'w') as f:
                         f.write('{"installed":{"client_id":"placeholder","project_id":"youtube-upload-automation"}}')
                 
-                logger.info("API credentials setup completed for Google Colab!")
+                logger.info("API credentials setup completed!")
                 return True
                 
             except Exception as e:
