@@ -1,0 +1,34 @@
+# Environment variables and API keys
+.env
+*.env
+
+# Credentials
+credentials.json
+client_secret.json
+*_client_secret.json
+*-oauth2.json
+youtube-oauth2*.json
+
+# Temporary files
+temp/
+*.log
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+venv/
+env/
+.venv/
+.env/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Downloaded videos and thumbnails
+*.mp4
+*.jpg
+*.png
