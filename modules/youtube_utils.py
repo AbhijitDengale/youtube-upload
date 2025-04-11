@@ -8,13 +8,14 @@ import httplib2
 import random
 import time
 import logging
+import argparse
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 from google.oauth2.credentials import Credentials
 from oauth2client.client import flow_from_clientsecrets
 from oauth2client.file import Storage
-from oauth2client.tools import run_flow
+from oauth2client.tools import run_flow, argparser
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +111,12 @@ class YouTubeClient:
         
         if credentials is None or credentials.invalid:
             logger.info(f"Obtaining new OAuth credentials for {client_secrets_file}")
-            credentials = run_flow(flow, storage)
+            # Create a separate parser for OAuth flow to prevent conflicts with main script
+            oauth_parser = argparse.ArgumentParser(parents=[argparser])
+            oauth_args = oauth_parser.parse_args([])  # Empty list to avoid reading sys.argv
+            
+            # Pass the custom arguments to avoid conflict with main script arguments
+            credentials = run_flow(flow, storage, oauth_args)
         
         self.youtube = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, 
                            credentials=credentials)
