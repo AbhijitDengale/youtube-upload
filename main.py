@@ -503,6 +503,8 @@ def main():
     parser = argparse.ArgumentParser(description='YouTube upload automation script')
     parser.add_argument('--test', action='store_true', help='Run in test mode - uploads one video to each channel')
     parser.add_argument('--test-only', action='store_true', help='Only run the test upload and exit')
+    parser.add_argument('--folder', type=str, default="GeminiStories", 
+                      help='Name of the main Google Drive folder to scan for videos (default: GeminiStories)')
     args = parser.parse_args()
     
     # Initialize Telegram notifier early with hardcoded credentials
@@ -581,79 +583,102 @@ def main():
                 telegram.send_message("❌ Test upload failed for all channels. Stopping automation.")
                 return
         
-        # Get folders from Google Drive
-        logger.info("Scanning Google Drive folders...")
-        folders = drive_client.get_folders()
+        # Target specific folder in Google Drive (GeminiStories by default)
+        target_folder_name = args.folder
+        logger.info(f"Scanning for main folder: {target_folder_name}")
         
-        # Process each folder
-        for folder in folders:
+        # Get all folders from Google Drive
+        all_folders = drive_client.get_folders()
+        
+        # Find the GeminiStories folder (or the folder specified by --folder)
+        target_folder = None
+        for folder in all_folders:
+            if folder.get('name') == target_folder_name:
+                target_folder = folder
+                break
+        
+        if not target_folder:
+            error_msg = f"Folder '{target_folder_name}' not found in Google Drive. Please create it or specify the correct folder name."
+            logger.error(error_msg)
+            telegram.send_message(f"❌ {error_msg}")
+            return
+                
+        # Process the target folder and its subfolders
+        folder_name = target_folder.get('name')
+        folder_id = target_folder.get('id')
+        logger.info(f"Processing main folder: {folder_name}")
+        
+        # Get subfolders within the target folder
+        subfolders = drive_client.get_subfolders(folder_id)
+        
+        # Count of processed videos
+        processed_count = 0
+        
+        for subfolder in subfolders:
             try:
-                folder_name = folder.get('name')
-                folder_id = folder.get('id')
-                logger.info(f"Processing folder: {folder_name}")
+                subfolder_name = subfolder.get('name')
+                subfolder_id = subfolder.get('id')
+                logger.info(f"Processing subfolder: {subfolder_name}")
                 
-                # Get subfolders within this folder
-                subfolders = drive_client.get_subfolders(folder_id)
+                # Get videos in this subfolder
+                videos = drive_client.get_videos(subfolder_id)
                 
-                for subfolder in subfolders:
-                    subfolder_name = subfolder.get('name')
-                    subfolder_id = subfolder.get('id')
-                    logger.info(f"Processing subfolder: {subfolder_name} in {folder_name}")
+                if not videos:
+                    logger.info(f"No videos found in subfolder {subfolder_name}")
+                    continue
                     
-                    # Get videos in this subfolder
-                    videos = drive_client.get_videos(subfolder_id)
+                for video in videos:
+                    video_id = video.get('id')
+                    video_name = video.get('name')
                     
-                    for video in videos:
-                        video_id = video.get('id')
-                        video_name = video.get('name')
+                    # Create video info dictionary
+                    video_info = {
+                        "id": video_id,
+                        "name": video_name,
+                        "folder_name": folder_name,
+                        "subfolder_name": subfolder_name,
+                        "subfolder_id": subfolder_id
+                    }
+                    
+                    # Check if video has already been uploaded to all channels
+                    uploaded_channels = sheets_logger.get_uploaded_channels(video_id)
+                    if uploaded_channels and len(uploaded_channels) >= len(youtube_uploader.channels):
+                        logger.info(f"Video {video_name} already uploaded to all channels. Skipping.")
+                        continue
+                    
+                    # Upload to each channel that hasn't received this video yet
+                    for channel_name, youtube_client in youtube_uploader.channels.items():
+                        channel_display_name = channel_name
+                        for channel in YOUTUBE_CHANNELS:
+                            if channel["credentials_file"].startswith(channel_name) or channel["handle"] == channel_name:
+                                channel_display_name = channel["name"]
+                                break
                         
-                        # Create video info dictionary
-                        video_info = {
-                            "id": video_id,
-                            "name": video_name,
-                            "folder_name": folder_name,
-                            "subfolder_name": subfolder_name,
-                            "subfolder_id": subfolder_id
-                        }
-                        
-                        # Check if video has already been uploaded to all channels
-                        uploaded_channels = sheets_logger.get_uploaded_channels(video_id)
-                        if uploaded_channels and len(uploaded_channels) >= len(youtube_uploader.channels):
-                            logger.info(f"Video {video_name} already uploaded to all channels. Skipping.")
+                        # Skip if already uploaded to this channel
+                        if channel_display_name in uploaded_channels:
+                            logger.info(f"Video {video_name} already uploaded to {channel_display_name}. Skipping.")
                             continue
+                            
+                        # Upload to this channel
+                        upload_video_to_channel(
+                            drive_client=drive_client,
+                            youtube_client=youtube_client,
+                            sheets_logger=sheets_logger,
+                            telegram=telegram,
+                            video_info=video_info,
+                            channel_name=channel_display_name
+                        )
+                        processed_count += 1
                         
-                        # Upload to each channel that hasn't received this video yet
-                        for channel_name, youtube_client in youtube_uploader.channels.items():
-                            channel_display_name = channel_name
-                            for channel in YOUTUBE_CHANNELS:
-                                if channel["credentials_file"].startswith(channel_name) or channel["handle"] == channel_name:
-                                    channel_display_name = channel["name"]
-                                    break
-                            
-                            # Skip if already uploaded to this channel
-                            if channel_display_name in uploaded_channels:
-                                logger.info(f"Video {video_name} already uploaded to {channel_display_name}. Skipping.")
-                                continue
-                                
-                            # Upload to this channel
-                            upload_video_to_channel(
-                                drive_client=drive_client,
-                                youtube_client=youtube_client,
-                                sheets_logger=sheets_logger,
-                                telegram=telegram,
-                                video_info=video_info,
-                                channel_name=channel_display_name
-                            )
-                            
-                            # Wait between uploads to avoid rate limits
-                            time.sleep(5)
-                
-            except Exception as folder_error:
-                logger.error(f"Error processing folder {folder_name}: {str(folder_error)}")
+                        # Wait between uploads to avoid rate limits
+                        time.sleep(5)
+                        
+            except Exception as subfolder_error:
+                logger.error(f"Error processing subfolder {subfolder_name}: {str(subfolder_error)}")
                 continue
                 
-        logger.info("Completed processing all folders")
-        telegram.send_message("✅ YouTube upload automation completed")
+        logger.info(f"Completed processing {processed_count} videos from {len(subfolders)} subfolders")
+        telegram.send_message(f"✅ YouTube upload automation completed. Processed {processed_count} videos.")
                 
     except Exception as e:
         logger.error(f"Error in main execution: {str(e)}")
