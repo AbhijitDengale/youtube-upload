@@ -397,47 +397,69 @@ def test_upload_to_channels(drive_client, youtube_uploader, sheets_logger, teleg
     test_video = None
     test_results = {}
     
-    # Scan folders for a video to test with
-    folders = drive_client.get_folders()
+    # Specifically look for the GeminiStories folder
+    target_folder_name = "GeminiStories"
+    logger.info(f"Scanning for {target_folder_name} folder for test videos")
     
-    for folder in folders:
+    # Get all folders from Google Drive
+    all_folders = drive_client.get_folders()
+    
+    # Find the GeminiStories folder
+    target_folder = None
+    for folder in all_folders:
+        if folder.get('name') == target_folder_name:
+            target_folder = folder
+            break
+    
+    if not target_folder:
+        error_msg = f"Folder '{target_folder_name}' not found in Google Drive for testing"
+        logger.error(error_msg)
+        telegram.send_message(f"❌ Test failed: {error_msg}")
+        return {}
+    
+    # Process the target folder
+    folder_name = target_folder.get('name')
+    folder_id = target_folder.get('id')
+    logger.info(f"Found {folder_name} folder for testing")
+    
+    # Get subfolders within the target folder
+    subfolders = drive_client.get_subfolders(folder_id)
+    
+    # Look for videos in each subfolder
+    for subfolder in subfolders:
         if test_video:
             break
             
-        folder_name = folder.get('name')
-        folder_id = folder.get('id')
+        subfolder_name = subfolder.get('name')
+        subfolder_id = subfolder.get('id')
+        logger.info(f"Checking subfolder {subfolder_name} for test videos")
         
-        # Get subfolders within this folder
-        subfolders = drive_client.get_subfolders(folder_id)
+        # Get videos in this subfolder
+        videos = drive_client.get_videos(subfolder_id)
         
-        for subfolder in subfolders:
-            if test_video:
-                break
-                
-            subfolder_name = subfolder.get('name')
-            subfolder_id = subfolder.get('id')
-            
-            # Get videos in this subfolder
-            videos = drive_client.get_videos(subfolder_id)
-            
-            if videos:
-                # Use the first video found for testing
-                video = videos[0]
-                test_video = {
-                    "id": video.get('id'),
-                    "name": video.get('name'),
-                    "folder_name": folder_name,
-                    "subfolder_name": subfolder_name,
-                    "subfolder_id": subfolder_id
-                }
+        if videos:
+            # Use the first video found for testing
+            video = videos[0]
+            test_video = {
+                "id": video.get('id'),
+                "name": video.get('name'),
+                "folder_name": folder_name,
+                "subfolder_name": subfolder_name,
+                "subfolder_id": subfolder_id
+            }
+            logger.info(f"Found test video: {video.get('name')} in {subfolder_name}")
     
     if not test_video:
-        logger.error("No videos found for testing")
-        telegram.send_message("❌ Test failed: No videos found")
+        logger.error(f"No videos found in any {target_folder_name} subfolders. Please upload a video first.")
+        telegram.send_message(f"❌ Test failed: No videos found in {target_folder_name} folder. Please upload a video first.")
         return {}
     
     # Test upload to each channel
     for channel_name, youtube_client in youtube_uploader.channels.items():
+        # Skip the default client which is used internally
+        if channel_name == "default":
+            continue
+            
         channel_display_name = channel_name
         for channel in YOUTUBE_CHANNELS:
             if channel["credentials_file"].startswith(channel_name) or channel["handle"] == channel_name:
