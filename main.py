@@ -30,6 +30,10 @@ from modules.download_utils import download_credentials
 # Google Drive links for API key files
 DRIVE_API_KEY_LINK = "https://drive.google.com/file/d/152LtocR_Lvll37IW3GXJWAowLS02YBF2/view?usp=sharing"
 SHEETS_API_KEY_LINK = "https://drive.google.com/file/d/1W365AG3tpzytNRnZ9darqLDLx94XYsNo/view?usp=sharing"
+YOUTUBE_OAUTH_LINK = "https://drive.google.com/file/d/13ixoC9O9QrBlSOhUKjrUq9a5cG8oVgZw/view?usp=sharing"  # Added OAuth creds link
+YOUTUBE_API_KEY = "AIzaSyCNbN-lpBIAjZHxe9wI60bTbig4VyT6i10"  # Hardcoded for simplicity
+TELEGRAM_BOT_TOKEN = "7425850499:AAFeqvSXe-KRaBCEvRlrpfdSbExSoGeMiCI"  # Hardcoded for simplicity
+TELEGRAM_CHAT_ID = "-1002493560505"  # Hardcoded for simplicity
 
 # Target YouTube channels
 YOUTUBE_CHANNELS = [
@@ -40,13 +44,6 @@ YOUTUBE_CHANNELS = [
 
 # Define channel credential files
 YOUTUBE_CHANNEL_CREDENTIALS = [channel["credentials_file"] for channel in YOUTUBE_CHANNELS]
-
-# Hardcoded Telegram credentials
-TELEGRAM_BOT_TOKEN = "7425850499:AAFeqvSXe-KRaBCEvRlrpfdSbExSoGeMiCI"
-TELEGRAM_CHAT_ID = "-1002493560505"
-
-# YouTube API Key
-YOUTUBE_API_KEY = "AIzaSyCNbN-lpBIAjZHxe9wI60bTbig4VyT6i10"
 
 # Configure logging
 logging.basicConfig(
@@ -103,10 +100,12 @@ def download_api_keys_from_drive():
                 # Extract file IDs from links
                 drive_api_key_id = DRIVE_API_KEY_LINK.split('/')[-2]
                 sheets_api_key_id = SHEETS_API_KEY_LINK.split('/')[-2]
+                youtube_oauth_id = YOUTUBE_OAUTH_LINK.split('/')[-2]
                 
                 # Direct download URLs
                 drive_download_url = f"https://drive.google.com/uc?export=download&id={drive_api_key_id}"
                 sheets_download_url = f"https://drive.google.com/uc?export=download&id={sheets_api_key_id}"
+                youtube_oauth_url = f"https://drive.google.com/uc?export=download&id={youtube_oauth_id}"
                 
                 # Download Drive API credentials
                 try:
@@ -145,6 +144,26 @@ def download_api_keys_from_drive():
                     # Create a fallback file
                     with open('google_sheets_credentials.json', 'w') as f:
                         f.write('{"installed":{"client_id":"placeholder","project_id":"youtube-upload-automation"}}')
+                
+                # Download YouTube OAuth credentials
+                try:
+                    logger.info(f"Downloading YouTube OAuth credentials from {youtube_oauth_url}")
+                    response = requests.get(youtube_oauth_url)
+                    if response.status_code == 200:
+                        # Save the single OAuth file
+                        with open('youtube_oauth_credentials.json', 'wb') as f:
+                            f.write(response.content)
+                        logger.info("Successfully downloaded YouTube OAuth credentials")
+                        
+                        # Create copies for each channel using the same credentials
+                        for channel in YOUTUBE_CHANNELS:
+                            with open(channel["credentials_file"], 'wb') as f:
+                                f.write(response.content)
+                            logger.info(f"Created OAuth credentials for {channel['name']} channel")
+                    else:
+                        logger.error(f"Failed to download YouTube OAuth credentials: {response.status_code}")
+                except Exception as e:
+                    logger.error(f"Error downloading YouTube OAuth credentials: {str(e)}")
                 
                 logger.info("API credentials setup completed!")
                 return True
@@ -199,7 +218,31 @@ def ensure_credentials():
     return credentials_exist
 
 def create_channel_placeholder_files():
-    """Create placeholder credential files for each YouTube channel"""
+    """Create placeholder credential files for each YouTube channel if they don't exist"""
+    # If we have the master OAuth file, copy it for each channel
+    if os.path.exists('youtube_oauth_credentials.json'):
+        with open('youtube_oauth_credentials.json', 'rb') as source_file:
+            oauth_content = source_file.read()
+            for channel in YOUTUBE_CHANNELS:
+                cred_file = channel["credentials_file"]
+                if not os.path.exists(cred_file):
+                    logger.info(f"Creating OAuth credential file for {channel['name']} channel")
+                    with open(cred_file, 'wb') as f:
+                        f.write(oauth_content)
+                    
+                    # Also create a .info file to document what this is for humans
+                    with open(f"{cred_file}.info", "w") as f:
+                        f.write(f"""
+# Information about the YouTube OAuth credentials file
+# Channel: {channel['name']} (@{channel['handle']})
+#
+# This file contains OAuth credentials for YouTube API access.
+# When you run the script, you'll need to authenticate with the 
+# Google account associated with the {channel['name']} channel.
+""")
+        return
+    
+    # Otherwise create placeholder files if needed
     for channel in YOUTUBE_CHANNELS:
         cred_file = channel["credentials_file"]
         if not os.path.exists(cred_file):
