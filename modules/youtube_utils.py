@@ -9,6 +9,8 @@ import random
 import time
 import logging
 import argparse
+import json
+import sys
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
@@ -64,18 +66,31 @@ RETRIABLE_STATUS_CODES = [500, 502, 503, 504]
 class YouTubeClient:
     """Client for interacting with YouTube API"""
     
-    def __init__(self, channel_credentials_file=None):
+    def __init__(self, channel_credentials_file=None, use_api_key_for_testing=False):
         """
         Initialize the YouTube API client
         
         Args:
             channel_credentials_file: Optional path to a channel-specific OAuth credentials file
+            use_api_key_for_testing: If True, use API key instead of OAuth for testing purposes
         """
         try:
             self.channel_name = "default"
             
-            # Check if we have client secrets file for OAuth for this specific channel
-            if channel_credentials_file and os.path.exists(channel_credentials_file):
+            # For test mode or headless environments like Colab, use API key
+            in_colab = 'google.colab' in sys.modules
+            
+            if use_api_key_for_testing or in_colab:
+                logger.info(f"Using API key for YouTube client (testing mode or Colab environment)")
+                self.youtube = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, 
+                                     developerKey=YOUTUBE_API_KEY)
+                
+                # If we have a channel file, set the channel name from it
+                if channel_credentials_file:
+                    self.channel_name = os.path.basename(channel_credentials_file).split('.')[0]
+            
+            # Standard OAuth flow for non-Colab environments
+            elif channel_credentials_file and os.path.exists(channel_credentials_file):
                 self._initialize_with_oauth(channel_credentials_file)
                 self.channel_name = os.path.basename(channel_credentials_file).split('.')[0]
             elif os.path.exists('client_secret.json'):
@@ -100,26 +115,42 @@ class YouTubeClient:
         # Generate a unique credentials file name based on the client_secrets_file name
         credentials_file = f"youtube-oauth2-{os.path.basename(client_secrets_file).split('.')[0]}.json"
         
-        flow = flow_from_clientsecrets(
-            client_secrets_file,
-            scope=YOUTUBE_UPLOAD_SCOPE,
-            message=MISSING_CLIENT_SECRETS_MESSAGE % client_secrets_file
-        )
-        
-        storage = Storage(credentials_file)
-        credentials = storage.get()
-        
-        if credentials is None or credentials.invalid:
-            logger.info(f"Obtaining new OAuth credentials for {client_secrets_file}")
-            # Create a separate parser for OAuth flow to prevent conflicts with main script
-            oauth_parser = argparse.ArgumentParser(parents=[argparser])
-            oauth_args = oauth_parser.parse_args([])  # Empty list to avoid reading sys.argv
+        try:
+            flow = flow_from_clientsecrets(
+                client_secrets_file,
+                scope=YOUTUBE_UPLOAD_SCOPE,
+                message=MISSING_CLIENT_SECRETS_MESSAGE % client_secrets_file
+            )
             
-            # Pass the custom arguments to avoid conflict with main script arguments
-            credentials = run_flow(flow, storage, oauth_args)
-        
-        self.youtube = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, 
-                           credentials=credentials)
+            storage = Storage(credentials_file)
+            credentials = storage.get()
+            
+            if credentials is None or credentials.invalid:
+                logger.info(f"Obtaining new OAuth credentials for {client_secrets_file}")
+                # Check if running in headless environment
+                in_colab = 'google.colab' in sys.modules
+                
+                if in_colab:
+                    logger.warning("Running in Google Colab which doesn't support browser OAuth flow.")
+                    logger.warning("Falling back to API key for limited functionality.")
+                    self.youtube = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, 
+                                        developerKey=YOUTUBE_API_KEY)
+                    return
+                
+                # Create a separate parser for OAuth flow to prevent conflicts with main script
+                oauth_parser = argparse.ArgumentParser(parents=[argparser])
+                oauth_args = oauth_parser.parse_args([])  # Empty list to avoid reading sys.argv
+                
+                # Pass the custom arguments to avoid conflict with main script arguments
+                credentials = run_flow(flow, storage, oauth_args)
+            
+            self.youtube = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, 
+                              credentials=credentials)
+        except Exception as e:
+            logger.error(f"OAuth authentication failed: {str(e)}")
+            logger.warning("Falling back to API key for limited functionality.")
+            self.youtube = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, 
+                                developerKey=YOUTUBE_API_KEY)
     
     def _wait_for_rate_limit_reset(self, seconds_to_wait=10):
         """Wait for YouTube API rate limit to reset"""
@@ -276,23 +307,24 @@ class YouTubeClient:
 class MultiChannelYouTubeUploader:
     """Class for uploading videos to multiple YouTube channels"""
     
-    def __init__(self, channel_credentials_files=None):
+    def __init__(self, channel_credentials_files=None, use_api_key_for_testing=False):
         """
         Initialize multiple YouTube clients for different channels
         
         Args:
             channel_credentials_files: List of paths to channel-specific OAuth credential files
+            use_api_key_for_testing: If True, use API key instead of OAuth for testing
         """
         self.channels = {}
         
         # Initialize default channel with API key
-        self.channels["default"] = YouTubeClient()
+        self.channels["default"] = YouTubeClient(use_api_key_for_testing=use_api_key_for_testing)
         
         # Initialize additional channels if credentials files are provided
         if channel_credentials_files:
             for credentials_file in channel_credentials_files:
                 if os.path.exists(credentials_file):
-                    client = YouTubeClient(credentials_file)
+                    client = YouTubeClient(credentials_file, use_api_key_for_testing=use_api_key_for_testing)
                     self.channels[client.channel_name] = client
         
         logger.info(f"Initialized YouTube uploader with {len(self.channels)} channels: {', '.join(self.channels.keys())}")

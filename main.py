@@ -526,10 +526,14 @@ def main():
             telegram.send_message(f"❌ Failed to initialize Google Drive client: {str(e)}")
             return
         
+        # Check if we're in test mode
+        is_test_mode = args.test or args.test_only
+        
         # Initialize multi-channel YouTube uploader
         try:
             youtube_uploader = MultiChannelYouTubeUploader(
-                channel_credentials_files=[f for f in YOUTUBE_CHANNEL_CREDENTIALS if os.path.exists(f)]
+                channel_credentials_files=[f for f in YOUTUBE_CHANNEL_CREDENTIALS if os.path.exists(f)],
+                use_api_key_for_testing=is_test_mode  # Use API key in test mode to avoid OAuth prompt
             )
             
             # Log available channels
