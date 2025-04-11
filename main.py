@@ -626,35 +626,157 @@ def main():
                 telegram.send_message("❌ Test upload failed for all channels. Stopping automation.")
                 return
         
-        # Target specific folder in Google Drive (GeminiStories by default)
-        target_folder_name = args.folder
+        # Target GeminiStories folder in Google Drive
+        target_folder_name = "GeminiStories"
         logger.info(f"Scanning for main folder: {target_folder_name}")
         
-        # Get all folders from Google Drive
-        all_folders = drive_client.get_folders()
+        # DIRECT VIDEO SEARCH APPROACH
+        # Instead of searching for the folder first, we'll search for videos and their parent folders
+        logger.info("Using direct video search approach to find target folder")
         
-        # Log all folders found to help with debugging
-        if all_folders:
-            logger.info(f"Found {len(all_folders)} folders in Google Drive")
-            folder_names = [f"{folder.get('name')} (ID: {folder.get('id')})" for folder in all_folders]
-            logger.info(f"Available folders: {', '.join(folder_names)}")
-        else:
-            logger.warning("No folders found in Google Drive")
+        try:
+            # Search for video files
+            logger.info("Searching for video files to identify the target folder...")
+            video_query = "mimeType contains 'video/' and trashed=false"
+            video_results = drive_client.drive_service.files().list(
+                q=video_query,
+                fields="files(id, name, parents)",
+                pageSize=10  # Limit to 10 videos for efficiency
+            ).execute()
+            
+            videos = video_results.get('files', [])
+            
+            if not videos:
+                logger.error("No videos found in Google Drive.")
+                telegram.send_message("❌ No videos found in Google Drive.")
+                return
+            
+            logger.info(f"Found {len(videos)} videos, examining parent folders...")
+            
+            # Keep track of potential GeminiStories parent folders
+            potential_folders = {}
+            
+            # Check parent folders of videos
+            for video in videos:
+                video_name = video.get('name')
+                parent_ids = video.get('parents', [])
+                
+                if not parent_ids:
+                    continue
+                
+                parent_id = parent_ids[0]
+                
+                # Get the parent folder
+                try:
+                    parent_folder = drive_client.drive_service.files().get(
+                        fileId=parent_id,
+                        fields="id, name, parents"
+                    ).execute()
+                    
+                    parent_name = parent_folder.get('name')
+                    grandparent_ids = parent_folder.get('parents', [])
+                    
+                    if not grandparent_ids:
+                        continue
+                    
+                    grandparent_id = grandparent_ids[0]
+                    
+                    # Get the grandparent folder
+                    grandparent_folder = drive_client.drive_service.files().get(
+                        fileId=grandparent_id,
+                        fields="id, name"
+                    ).execute()
+                    
+                    grandparent_name = grandparent_folder.get('name')
+                    
+                    # Check if this could be our target folder
+                    if grandparent_name.lower() == target_folder_name.lower():
+                        if grandparent_id not in potential_folders:
+                            potential_folders[grandparent_id] = {
+                                'name': grandparent_name,
+                                'video_count': 1,
+                                'children': set([parent_id])
+                            }
+                        else:
+                            potential_folders[grandparent_id]['video_count'] += 1
+                            potential_folders[grandparent_id]['children'].add(parent_id)
+                    
+                    logger.info(f"Video '{video_name}' is in '{parent_name}' which is in '{grandparent_name}'")
+                    
+                except Exception as e:
+                    logger.warning(f"Error getting parent info for video {video_name}: {str(e)}")
+            
+            if not potential_folders:
+                # Fallback to the original folder search method
+                logger.info("Direct video search didn't find the target folder, falling back to folder search method")
+                
+                # Get all folders from Google Drive
+                all_folders = drive_client.get_folders()
+                
+                # Log all folders found to help with debugging
+                if all_folders:
+                    logger.info(f"Found {len(all_folders)} folders in Google Drive")
+                    folder_names = [f"{folder.get('name')} (ID: {folder.get('id')})" for folder in all_folders]
+                    logger.info(f"Available folders: {', '.join(folder_names)}")
+                else:
+                    logger.warning("No folders found in Google Drive")
+                
+                # Find the target folder using case-insensitive matching
+                target_folder = None
+                for folder in all_folders:
+                    folder_name = folder.get('name', '')
+                    # Use case-insensitive comparison
+                    if folder_name.lower() == target_folder_name.lower():
+                        target_folder = folder
+                        break
+                
+                if not target_folder:
+                    error_msg = f"Folder with name like '{target_folder_name}' not found in Google Drive. Please create it or specify the correct folder name."
+                    logger.error(error_msg)
+                    telegram.send_message(f"❌ {error_msg}")
+                    return
+            else:
+                # Choose the folder with the most videos
+                best_folder_id = max(potential_folders.items(), key=lambda x: x[1]['video_count'])[0]
+                best_folder_name = potential_folders[best_folder_id]['name']
+                
+                logger.info(f"Found target folder through video search: {best_folder_name} (ID: {best_folder_id})")
+                
+                # Create a folder object for consistency with the other method
+                target_folder = {
+                    'id': best_folder_id,
+                    'name': best_folder_name
+                }
         
-        # Find the GeminiStories folder (or the folder specified by --folder) using case-insensitive matching
-        target_folder = None
-        for folder in all_folders:
-            folder_name = folder.get('name', '')
-            # Use case-insensitive comparison
-            if folder_name.lower() == target_folder_name.lower():
-                target_folder = folder
-                break
-        
-        if not target_folder:
-            error_msg = f"Folder with name like '{target_folder_name}' not found in Google Drive. Please create it or specify the correct folder name."
-            logger.error(error_msg)
-            telegram.send_message(f"❌ {error_msg}")
-            return
+        except Exception as e:
+            logger.error(f"Error in direct video search approach: {str(e)}")
+            # Continue with the original folder search method
+            
+            # Get all folders from Google Drive
+            all_folders = drive_client.get_folders()
+            
+            # Log all folders found to help with debugging
+            if all_folders:
+                logger.info(f"Found {len(all_folders)} folders in Google Drive")
+                folder_names = [f"{folder.get('name')} (ID: {folder.get('id')})" for folder in all_folders]
+                logger.info(f"Available folders: {', '.join(folder_names)}")
+            else:
+                logger.warning("No folders found in Google Drive")
+            
+            # Find the target folder using case-insensitive matching
+            target_folder = None
+            for folder in all_folders:
+                folder_name = folder.get('name', '')
+                # Use case-insensitive comparison
+                if folder_name.lower() == target_folder_name.lower():
+                    target_folder = folder
+                    break
+            
+            if not target_folder:
+                error_msg = f"Folder with name like '{target_folder_name}' not found in Google Drive. Please create it or specify the correct folder name."
+                logger.error(error_msg)
+                telegram.send_message(f"❌ {error_msg}")
+                return
                 
         # Process the target folder and its subfolders
         folder_name = target_folder.get('name')
@@ -668,7 +790,7 @@ def main():
         if subfolders:
             logger.info(f"Found {len(subfolders)} subfolders in {folder_name}")
             subfolder_names = [subfolder.get('name') for subfolder in subfolders]
-            logger.info(f"Subfolders: {', '.join(subfolder_names)}")
+            logger.info(f"Subfolders: {', '.join(subfolder_names[:10])}...") if len(subfolder_names) > 10 else logger.info(f"Subfolders: {', '.join(subfolder_names)}")
         else:
             logger.warning(f"No subfolders found in {folder_name}")
             telegram.send_message(f"⚠️ Warning: No subfolders found in {folder_name} folder")
