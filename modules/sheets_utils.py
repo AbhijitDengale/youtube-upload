@@ -4,6 +4,7 @@ Google Sheets utility functions for logging video uploads.
 
 import os
 import logging
+import sys
 from datetime import datetime
 import gspread
 from google.oauth2 import service_account
@@ -24,19 +25,57 @@ class GoogleSheetsLogger:
         self.spreadsheet_id = spreadsheet_id
         
         try:
-            # Check if we have service account credentials
-            if os.path.exists('credentials.json'):
-                credentials = service_account.Credentials.from_service_account_file(
-                    'credentials.json',
-                    scopes=['https://www.googleapis.com/auth/spreadsheets']
-                )
-                self.client = gspread.authorize(credentials)
-                self.sheet = self.client.open_by_key(spreadsheet_id).sheet1
+            # Check if running in Google Colab
+            in_colab = 'google.colab' in sys.modules
+            
+            # Try multiple credential options in order of preference
+            if os.path.exists('google_sheets_credentials.json'):
+                logger.info("Using google_sheets_credentials.json for Sheets authentication")
+                try:
+                    credentials = service_account.Credentials.from_service_account_file(
+                        'google_sheets_credentials.json',
+                        scopes=['https://www.googleapis.com/auth/spreadsheets']
+                    )
+                    self.client = gspread.authorize(credentials)
+                    self.sheet = self.client.open_by_key(spreadsheet_id).sheet1
+                except Exception as e:
+                    logger.warning(f"Failed to use google_sheets_credentials.json as service account: {str(e)}")
+                    # Try as OAuth client credentials
+                    try:
+                        self.client = gspread.oauth(
+                            credentials_filename='google_sheets_credentials.json',
+                        )
+                        self.sheet = self.client.open_by_key(spreadsheet_id).sheet1
+                    except Exception as e2:
+                        logger.warning(f"Failed to use google_sheets_credentials.json as OAuth client: {str(e2)}")
+                        raise
+            elif os.path.exists('credentials.json'):
+                # Fallback to credentials.json
+                logger.info("Fallback to credentials.json for Sheets authentication")
+                try:
+                    credentials = service_account.Credentials.from_service_account_file(
+                        'credentials.json',
+                        scopes=['https://www.googleapis.com/auth/spreadsheets']
+                    )
+                    self.client = gspread.authorize(credentials)
+                    self.sheet = self.client.open_by_key(spreadsheet_id).sheet1
+                except Exception as e:
+                    logger.warning(f"Failed to use credentials.json: {str(e)}")
+                    raise
             else:
                 # Use API key (with limited functionality)
+                logger.info("No credentials file found, using API key if available")
                 api_key = os.getenv('GOOGLE_SHEETS_API_KEY')
                 if not api_key:
-                    raise ValueError("Google Sheets API key not found in environment variables")
+                    logger.warning("Google Sheets API key not found in environment variables")
+                    if in_colab:
+                        logger.info("In Colab: Creating dummy sheet for testing mode")
+                        self.client = None
+                        self.sheet = None
+                        return
+                    else:
+                        raise ValueError("Google Sheets API key not found in environment variables")
+                        
                 self.service = build('sheets', 'v4', developerKey=api_key)
                 self.client = None
                 self.sheet = None
@@ -47,48 +86,79 @@ class GoogleSheetsLogger:
             self._ensure_headers()
             
         except Exception as e:
-            logger.error(f"Error initializing Google Sheets logger: {str(e)}")
-            raise
+            if in_colab:
+                logger.error(f"Error initializing Google Sheets logger (continuing in Colab): {str(e)}")
+                # In Colab and testing, we'll create a dummy logger
+                self.client = None
+                self.sheet = None
+            else:
+                logger.error(f"Error initializing Google Sheets logger: {str(e)}")
+                raise
     
     def _ensure_headers(self):
-        """Ensure the spreadsheet has the correct headers"""
+        """Ensure that the spreadsheet has the correct headers"""
+        if not self.sheet:
+            return  # Skip for API key or dummy logger
+            
         try:
-            # Check if we're using service account or API key
-            if self.sheet:
-                # Using service account
-                headers = self.sheet.row_values(1)
-                if not headers:
-                    # Spreadsheet is empty, add headers
-                    headers = ["Video ID", "Video Name", "Folder Path", "YouTube URL", "Upload Time", "Channel"]
-                    self.sheet.update('A1:F1', [headers])
-                    logger.info("Added headers to Google Sheet")
-                elif len(headers) < 6 or headers[5] != "Channel":
-                    # Add channel column if it doesn't exist
-                    headers.append("Channel")
-                    self.sheet.update('A1:F1', [headers])
-                    logger.info("Added Channel column to Google Sheet")
-            else:
-                # Using API key - can only read, not write
-                result = self.service.spreadsheets().values().get(
-                    spreadsheetId=self.spreadsheet_id,
-                    range="A1:F1"
-                ).execute()
-                
-                values = result.get('values', [])
-                if not values:
-                    logger.warning("Cannot add headers to Google Sheet with API key. Please add headers manually.")
-                elif len(values[0]) < 6:
-                    logger.warning("Missing 'Channel' column. Please add it manually.")
-                
+            # Expected headers
+            expected_headers = ['Video ID', 'Title', 'Upload Date', 'YouTube URL', 'Channel', 'Status']
+            
+            # Get existing headers
+            existing_headers = self.sheet.row_values(1)
+            
+            if not existing_headers:
+                # Sheet is empty, add headers
+                self.sheet.append_row(expected_headers)
+                logger.info("Added headers to empty spreadsheet")
+            elif existing_headers != expected_headers:
+                # Headers don't match, update them
+                self.sheet.update('A1', [expected_headers])
+                logger.info("Updated headers in spreadsheet")
         except Exception as e:
-            logger.error(f"Error ensuring headers in Google Sheet: {str(e)}")
+            logger.warning(f"Error ensuring headers: {str(e)}")
+            
+    def log_upload(self, video_id, title, youtube_url, channel, status='Uploaded'):
+        """
+        Log a video upload to the spreadsheet
+        
+        Args:
+            video_id: ID of the video on Google Drive
+            title: Title of the video
+            youtube_url: YouTube URL of the uploaded video
+            channel: Name of the YouTube channel
+            status: Upload status
+        """
+        if not self.sheet:
+            logger.info(f"Dummy log: {video_id} - {title} - {youtube_url} - {channel}")
+            return True
+            
+        try:
+            # Check if video has already been logged for this channel
+            if self.is_video_uploaded(video_id, channel):
+                logger.info(f"Video {video_id} already logged for channel {channel}")
+                return False
+            
+            # Current date
+            upload_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Append row to sheet
+            self.sheet.append_row([video_id, title, upload_date, youtube_url, channel, status])
+            
+            logger.info(f"Logged upload of video {title} to channel {channel}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error logging upload: {str(e)}")
+            return False
     
-    def is_video_uploaded(self, video_id):
+    def is_video_uploaded(self, video_id, channel):
         """
         Check if a video has already been uploaded by checking the Google Sheet.
         
         Args:
             video_id: The Google Drive ID of the video
+            channel: The YouTube channel name that the video was uploaded to
             
         Returns:
             Boolean indicating if the video has already been uploaded
@@ -97,19 +167,27 @@ class GoogleSheetsLogger:
             # Check if we're using service account or API key
             if self.sheet:
                 # Using service account
-                # Find the video ID in the first column
-                cell = self.sheet.find(video_id)
-                return cell is not None
+                # Find all cells with video_id
+                cells = self.sheet.findall(video_id)
+                
+                # For each cell, get the channel name from column F
+                for cell in cells:
+                    if cell.col == 1:  # First column (Video ID)
+                        row = cell.row
+                        existing_channel = self.sheet.cell(row, 5).value  # Column F (Channel)
+                        if existing_channel == channel:
+                            return True
+                return False
             else:
                 # Using API key
                 result = self.service.spreadsheets().values().get(
                     spreadsheetId=self.spreadsheet_id,
-                    range="A:A"
+                    range="A2:F1000"  # Skip header row, get all data
                 ).execute()
                 
                 values = result.get('values', [])
                 for row in values:
-                    if row and row[0] == video_id:
+                    if len(row) >= 1 and row[0] == video_id and len(row) >= 6 and row[5] == channel:
                         return True
                 return False
                 
@@ -161,40 +239,3 @@ class GoogleSheetsLogger:
         except Exception as e:
             logger.error(f"Error getting uploaded channels for video {video_id}: {str(e)}")
             return []
-    
-    def log_upload(self, video_id, video_name, folder_path, youtube_url, upload_time=None, channel="default"):
-        """
-        Log a successful video upload to Google Sheets.
-        
-        Args:
-            video_id: The Google Drive ID of the video
-            video_name: The name of the video file
-            folder_path: The path to the folder containing the video
-            youtube_url: The URL of the uploaded YouTube video
-            upload_time: Time of upload (default: current time)
-            channel: The YouTube channel name that the video was uploaded to
-            
-        Returns:
-            Boolean indicating success or failure
-        """
-        try:
-            if not upload_time:
-                upload_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                
-            # Row to add to the sheet
-            row = [video_id, video_name, folder_path, youtube_url, upload_time, channel]
-            
-            # Check if we're using service account or API key
-            if self.sheet:
-                # Using service account, append the row
-                self.sheet.append_row(row)
-                logger.info(f"Logged upload of {video_name} to channel {channel} in Google Sheet")
-                return True
-            else:
-                # Using API key (limited, can only read)
-                logger.error("Cannot log upload with API key. Service account credentials required.")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error logging upload to Google Sheet: {str(e)}")
-            return False
