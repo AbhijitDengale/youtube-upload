@@ -16,6 +16,7 @@ import json
 import argparse
 import requests
 import io
+import subprocess  # Added for process execution
 from dotenv import load_dotenv
 from datetime import datetime
 
@@ -113,8 +114,21 @@ def download_api_keys_from_drive():
                 
                 # Try to copy the files from shared Drive to local storage
                 logger.info("Copying API key files to local storage...")
-                !cp -f /content/drive/MyDrive/credentials.json /content/ 2>/dev/null || echo "File not found in main Drive"
-                !cp -f /content/drive/MyDrive/google_sheets_credentials.json /content/ 2>/dev/null || echo "File not found in main Drive"
+                try:
+                    subprocess.run(
+                        ["cp", "-f", "/content/drive/MyDrive/credentials.json", "/content/"],
+                        stderr=subprocess.DEVNULL, check=False
+                    )
+                except Exception:
+                    logger.info("credentials.json not found in main Drive")
+                
+                try:
+                    subprocess.run(
+                        ["cp", "-f", "/content/drive/MyDrive/google_sheets_credentials.json", "/content/"],
+                        stderr=subprocess.DEVNULL, check=False
+                    )
+                except Exception:
+                    logger.info("google_sheets_credentials.json not found in main Drive")
                 
                 # If files are not found in Drive, fallback to default credentials
                 if not os.path.exists('/content/credentials.json'):
