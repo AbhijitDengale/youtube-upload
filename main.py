@@ -14,6 +14,8 @@ import time
 import logging
 import json
 import argparse
+import requests
+import io
 from dotenv import load_dotenv
 from datetime import datetime
 
@@ -42,6 +44,9 @@ YOUTUBE_CHANNEL_CREDENTIALS = [channel["credentials_file"] for channel in YOUTUB
 TELEGRAM_BOT_TOKEN = "7425850499:AAFeqvSXe-KRaBCEvRlrpfdSbExSoGeMiCI"
 TELEGRAM_CHAT_ID = "-1002493560505"
 
+# YouTube API Key
+YOUTUBE_API_KEY = "AIzaSyCNbN-lpBIAjZHxe9wI60bTbig4VyT6i10"
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -56,27 +61,93 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
+def ensure_env_file():
+    """Create .env file if it doesn't exist with default values"""
+    if not os.path.exists('.env'):
+        logger.info("Creating .env file with default values")
+        with open('.env', 'w') as env_file:
+            env_file.write(f"""# YouTube Upload Automation API Configuration
+GOOGLE_DRIVE_API_KEY=auto_downloaded
+YOUTUBE_API_KEY={YOUTUBE_API_KEY}
+GOOGLE_SHEETS_API_KEY=auto_downloaded
+SPREADSHEET_ID=your_spreadsheet_id
+TELEGRAM_BOT_TOKEN={TELEGRAM_BOT_TOKEN}
+TELEGRAM_CHAT_ID={TELEGRAM_CHAT_ID}
+""")
+    return True
+
+def download_api_keys_from_drive():
+    """
+    Try to download API keys from Google Drive directly.
+    If in Google Colab, use the Colab auth. Otherwise use direct download.
+    """
+    try:
+        # Check if running in Google Colab
+        import google.colab
+        logger.info("Running in Google Colab environment")
+        
+        # Use Google Colab authentication
+        from google.colab import auth
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaIoBaseDownload
+        import google.auth
+        
+        # Authenticate with Google
+        auth.authenticate_user()
+        creds, project_id = google.auth.default()
+        
+        # Function to download file from Google Drive via Colab
+        def download_via_colab(file_id, output_path):
+            drive_service = build('drive', 'v3', credentials=creds)
+            request = drive_service.files().get_media(fileId=file_id)
+            fh = io.FileIO(output_path, 'wb')
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while done is False:
+                status, done = downloader.next_chunk()
+                logger.info(f"Download {int(status.progress() * 100)}%")
+            return output_path
+        
+        # Extract file IDs from links
+        drive_api_key_id = DRIVE_API_KEY_LINK.split('/')[-2]
+        sheets_api_key_id = SHEETS_API_KEY_LINK.split('/')[-2]
+        
+        # Download the files
+        drive_creds_path = download_via_colab(drive_api_key_id, "credentials.json")
+        sheets_creds_path = download_via_colab(sheets_api_key_id, "google_sheets_credentials.json")
+        
+        logger.info("API credentials downloaded successfully via Google Colab!")
+        return True
+        
+    except (ImportError, ModuleNotFoundError):
+        logger.info("Not running in Google Colab, using direct download method")
+        
+        # Use the download_credentials function from download_utils
+        drive_creds_path, sheets_creds_path = download_credentials(
+            DRIVE_API_KEY_LINK, 
+            SHEETS_API_KEY_LINK
+        )
+        
+        if drive_creds_path:
+            logger.info("API credentials downloaded successfully!")
+            return True
+        else:
+            logger.error("Failed to download API credentials")
+            return False
+
 def ensure_credentials():
     """Ensure that credential files are available, downloading if necessary"""
     credentials_exist = os.path.exists('credentials.json')
     
     if not credentials_exist:
         logger.info("Credentials files not found. Downloading from Google Drive...")
-        drive_creds_path, sheets_creds_path = download_credentials(
-            DRIVE_API_KEY_LINK, 
-            SHEETS_API_KEY_LINK
-        )
+        success = download_api_keys_from_drive()
         
-        # Set up the credentials.json file
-        if drive_creds_path:
-            try:
-                if os.path.exists('credentials.json'):
-                    os.remove('credentials.json')
-                os.rename(drive_creds_path, 'credentials.json')
-                credentials_exist = True
-                logger.info("Successfully set up Google Drive credentials")
-            except Exception as e:
-                logger.error(f"Error setting up Google Drive credentials: {str(e)}")
+        if success and os.path.exists('credentials.json'):
+            credentials_exist = True
+            logger.info("Successfully set up Google Drive credentials")
+        else:
+            logger.error("Failed to set up Google Drive credentials")
     
     return credentials_exist
 
@@ -294,6 +365,28 @@ def test_upload_to_channels(drive_client, youtube_uploader, sheets_logger, teleg
     
     return test_results
 
+def setup_environment():
+    """Setup the complete environment for running the automation"""
+    logger.info("Setting up environment for YouTube upload automation")
+    
+    # Step 1: Create .env file with default values if not exists
+    ensure_env_file()
+    
+    # Step 2: Download API keys from Google Drive if needed
+    credentials_available = ensure_credentials()
+    if not credentials_available:
+        logger.warning("Failed to download credentials. Check internet connection and try again.")
+        return False
+    
+    # Step 3: Create placeholder credential files for YouTube channels
+    create_channel_placeholder_files()
+    
+    # Create temp directory if it doesn't exist
+    os.makedirs("temp", exist_ok=True)
+    
+    logger.info("Environment setup completed successfully")
+    return True
+
 def main():
     """Main execution function"""
     # Parse command line arguments
@@ -303,13 +396,10 @@ def main():
     args = parser.parse_args()
     
     try:
-        # Ensure credentials are available
-        credentials_available = ensure_credentials()
-        if not credentials_available:
-            logger.warning("Proceeding without credential files. Limited functionality may be available.")
-        
-        # Create placeholder credential files for YouTube channels
-        create_channel_placeholder_files()
+        # Setup the complete environment
+        if not setup_environment():
+            logger.error("Failed to set up environment. Exiting.")
+            return
         
         # Initialize clients
         logger.info("Initializing API clients...")
@@ -326,7 +416,14 @@ def main():
         
         # Initialize Telegram notifier with hardcoded credentials
         telegram = TelegramNotifier(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
-        sheets_logger = GoogleSheetsLogger(os.getenv("SPREADSHEET_ID"))
+        
+        # Try to get spreadsheet ID from environment variable
+        spreadsheet_id = os.getenv("SPREADSHEET_ID")
+        if not spreadsheet_id or spreadsheet_id == "your_spreadsheet_id":
+            logger.warning("SPREADSHEET_ID not set in .env file. Using default test spreadsheet.")
+            spreadsheet_id = "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"  # Sample Google spreadsheet
+        
+        sheets_logger = GoogleSheetsLogger(spreadsheet_id)
         
         # Send startup notification to Telegram
         channel_list = "\n".join([f"• {channel['name']} (@{channel['handle']})" for channel in YOUTUBE_CHANNELS])
